@@ -1,9 +1,6 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-extern crate console_error_panic_hook;
-use std::panic;
-
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
@@ -37,7 +34,7 @@ fn main() -> eframe::Result {
 #[cfg(target_arch = "wasm32")]
 fn main() {
     // Lets me see the panic message in browser's console
-    panic::set_hook(Box::new(console_error_panic_hook::hook));
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 
     use eframe::wasm_bindgen::JsCast as _;
 
