@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chip8sys::chip8::Chip8Sys;
 use chip8sys::chip8error::Chip8Error;
 use egui::special_emojis;
@@ -97,15 +99,27 @@ impl Chip8App {
         }
 
         // Load Chip-8 Roms
-        // result.rom_path = "roms/1-chip8-logo.ch8".to_string();
-        // result.chip8.load_rom("roms/2-ibm-logo.ch8".to_string());
-        // result.chip8.load_rom("roms/3-corax+.ch8".to_string());
-        // result.rom_path = "roms/5-quirks.ch8".to_string();
+        // let rom_name = "1-chip8-logo.ch8";
+        // let rom_name = "2-ibm-logo.ch8";
+        // let rom_name = "3-corax+.ch8";
+        // let rom_name = "5-quirks.ch8";
         // When running quirks rom hardcode this memory spot to auto run Chip-8
         // result.chip8.memory[0x1FF] = 1;
-        result.rom_path = "roms/walking_man.ch8".to_string();
-        // result.rom_path = "../roms/7-beep.ch8".to_string();
+        let rom_name = "walking_man.ch8";
+        // let rom_name = "7-beep.ch8";
 
+        // This builds an absolute path to the ROM file based on the crate location.
+        let rom_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../roms")
+            .join(rom_name);
+
+        // This stores the full ROM path so restarts reuse the same file.
+        result.rom_path = rom_path
+            .to_str()
+            .expect("rom path should be valid unicode")
+            .to_string();
+
+        // This loads the ROM bytes into the emulator.
         result.chip8.load_rom(&result.rom_path);
         // result.chip8.load_chip8_logo();
         // result.chip8.load_sound_test();
