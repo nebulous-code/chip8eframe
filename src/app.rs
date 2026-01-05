@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, TimerMode, DISPLAY_WIDTH};
+use chip8sys::chip8::{Chip8KeyMask, Chip8Quirks, Chip8Sys, TimerMode, DISPLAY_WIDTH};
 use chip8sys::chip8error::Chip8Error;
 use egui::special_emojis;
 use egui::text::LayoutJob;
@@ -15,16 +15,17 @@ use rfd::FileDialog;
 
 use crate::about::About;
 
-/// This constant defines the target CPU speed in cycles per second.
-const CYCLES_PER_SECOND: f64 = 1100.0;
+/// This constant defines the default CPU speed in cycles per second.
+const DEFAULT_CYCLES_PER_SECOND: f64 = 1600.0;
 /// This constant caps CPU catch-up to keep the UI responsive.
-const MAX_CYCLES_PER_FRAME: u32 = 200;
+const DEFAULT_MAX_CYCLES_PER_FRAME: u32 = 200;
 /// This constant defines the timer tick rate in Hertz.
 const TIMER_HZ: f64 = 60.0;
 
 // if we add new fields, give them default values when deserializing old state
 pub struct Chip8App {
     chip8: Chip8Sys,
+    quirks: Chip8Quirks,
     zoom: f32,
     background_color: Color32,
     pixel_color: Color32,
@@ -39,6 +40,10 @@ pub struct Chip8App {
     rom_path: String,
     /// This field stores the last directory used for picking ROM files.
     last_rom_dir: Option<PathBuf>,
+    /// This field stores the active cycles-per-second target for the emulator.
+    cycles_per_second: f64,
+    /// This field stores the maximum cycles allowed per frame.
+    max_cycles_per_frame: u32,
     /// This field stores the last time the emulator loop ran.
     last_frame: Instant,
     /// This field accumulates fractional CPU cycles between frames.
@@ -51,10 +56,12 @@ impl Default for Chip8App {
     fn default() -> Self {
         // Setup and Handle Sound
         // let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+        let quirks = Chip8App::quirks_chip8();
 
         Self {
             // Example stuff:
-            chip8: Chip8Sys::new_chip_8(),
+            chip8: Chip8Sys::new_with_quirks(quirks),
+            quirks,
             zoom: 15.0,
             background_color: Color32::BLACK,
             pixel_color: Color32::GREEN,
@@ -98,6 +105,8 @@ impl Default for Chip8App {
             single_step: false,
             rom_path: String::new(),
             last_rom_dir: None,
+            cycles_per_second: DEFAULT_CYCLES_PER_SECOND,
+            max_cycles_per_frame: DEFAULT_MAX_CYCLES_PER_FRAME,
             last_frame: Instant::now(),
             cpu_accumulator: 0.0,
             timer_accumulator: 0.0,
@@ -159,6 +168,58 @@ impl Chip8App {
         result
     }
 
+    /// This function returns the Chip-8 preset quirk settings.
+    /// Arguments: none.
+    /// Returns: The Chip-8 preset quirks.
+    fn quirks_chip8() -> Chip8Quirks {
+        Chip8Quirks {
+            increment_i_on_store: true,
+            reset_vf_on_logic: true,
+            wrap_draw: false,
+            shift_uses_vx: false,
+        }
+    }
+
+    /// This function returns the Super Chip-8 preset quirk settings.
+    /// Arguments: none.
+    /// Returns: The Super Chip-8 preset quirks.
+    fn quirks_super_chip8() -> Chip8Quirks {
+        Chip8Quirks {
+            increment_i_on_store: false,
+            reset_vf_on_logic: false,
+            wrap_draw: false,
+            shift_uses_vx: true,
+        }
+    }
+
+    /// This function returns the XO-Chip preset quirk settings.
+    /// Arguments: none.
+    /// Returns: The XO-Chip preset quirks.
+    fn quirks_xo_chip() -> Chip8Quirks {
+        Chip8Quirks {
+            increment_i_on_store: true,
+            reset_vf_on_logic: false,
+            wrap_draw: true,
+            shift_uses_vx: false,
+        }
+    }
+
+    /// This function returns the display label for the current quirk preset.
+    /// Arguments:
+    /// - quirks: The quirk configuration to label.
+    /// Returns: The label for the matching preset, or "Custom".
+    fn quirk_preset_label(quirks: &Chip8Quirks) -> &'static str {
+        if *quirks == Self::quirks_chip8() {
+            "Chip-8"
+        } else if *quirks == Self::quirks_super_chip8() {
+            "Super Chip-8"
+        } else if *quirks == Self::quirks_xo_chip() {
+            "XO-Chip"
+        } else {
+            "Custom"
+        }
+    }
+
     /// This function chooses the default directory for the ROM picker dialog.
     /// Arguments: none.
     /// Returns: The preferred directory if available, otherwise None.
@@ -178,6 +239,29 @@ impl Chip8App {
         std::env::current_dir().ok()
     }
 
+    /// This function resets the emulator state with the active quirks.
+    /// Arguments: none.
+    /// Returns: none.
+    fn reset_emulator(&mut self) {
+        let timer_mode = self.chip8.timer_mode();
+        self.chip8 = Chip8Sys::new_with_quirks(self.quirks);
+        self.chip8.set_timer_mode(timer_mode);
+        self.cpu_accumulator = 0.0;
+        self.timer_accumulator = 0.0;
+    }
+
+    /// This function restarts the current ROM with the active quirks.
+    /// Arguments: none.
+    /// Returns: none.
+    fn restart_current_rom(&mut self) {
+        if self.rom_path.is_empty() {
+            return;
+        }
+        let rom_bytes = fs::read(&self.rom_path).expect("rom file should be readable");
+        self.reset_emulator();
+        self.chip8.load_rom_bytes(&rom_bytes);
+    }
+
     /// This function loads a ROM file from disk and resets the emulator state.
     /// Arguments:
     /// - rom_path: The path to the ROM file.
@@ -185,8 +269,8 @@ impl Chip8App {
     fn load_rom_from_path(&mut self, rom_path: &Path) {
         // This reads the ROM bytes from disk for the emulator to load.
         let rom_bytes = fs::read(rom_path).expect("rom file should be readable");
-        // This resets the emulator while preserving its quirk settings.
-        self.chip8.reset();
+        // This resets the emulator while applying the active quirks.
+        self.reset_emulator();
         // This stores the selected path for future restarts.
         self.rom_path = rom_path.to_string_lossy().to_string();
         // This stores the folder for the next file dialog.
@@ -231,7 +315,7 @@ impl eframe::App for Chip8App {
 
         if self.run {
             // This accumulates CPU work based on elapsed time.
-            self.cpu_accumulator += delta_seconds * CYCLES_PER_SECOND;
+            self.cpu_accumulator += delta_seconds * self.cycles_per_second;
             // This accumulates time toward the next timer tick.
             self.timer_accumulator += delta_seconds * TIMER_HZ;
 
@@ -245,7 +329,7 @@ impl eframe::App for Chip8App {
             // This advances the emulator state using the accumulated cycles.
             let cycles_to_run = self.cpu_accumulator.floor() as u32;
             if cycles_to_run > 0 {
-                let capped_cycles = cycles_to_run.min(MAX_CYCLES_PER_FRAME);
+                let capped_cycles = cycles_to_run.min(self.max_cycles_per_frame);
                 match self.chip8.tick(capped_cycles) {
                     Ok(_) => (),
                     Err(e) => match e {
@@ -381,13 +465,59 @@ impl eframe::App for Chip8App {
                 }
                 // This button reloads the current ROM from disk.
                 if ui.button("Restart").clicked() {
-                    // TODO: Take into account quirks
-                    if !self.rom_path.is_empty() {
-                        let rom_path = self.rom_path.clone();
-                        self.load_rom_from_path(Path::new(&rom_path));
-                    }
+                    self.restart_current_rom();
                 }
             });
+            ui.separator();
+            ui.label("Quirks (requires restart)");
+            egui::ComboBox::from_id_salt("quirk_presets")
+                .selected_text(Self::quirk_preset_label(&self.quirks))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(
+                            self.quirks == Self::quirks_chip8(),
+                            "Chip-8",
+                        )
+                        .clicked()
+                    {
+                        self.quirks = Self::quirks_chip8();
+                    }
+                    if ui
+                        .selectable_label(
+                            self.quirks == Self::quirks_super_chip8(),
+                            "Super Chip-8",
+                        )
+                        .clicked()
+                    {
+                        self.quirks = Self::quirks_super_chip8();
+                    }
+                    if ui
+                        .selectable_label(
+                            self.quirks == Self::quirks_xo_chip(),
+                            "XO-Chip",
+                        )
+                        .clicked()
+                    {
+                        self.quirks = Self::quirks_xo_chip();
+                    }
+                });
+            ui.checkbox(
+                &mut self.quirks.increment_i_on_store,
+                "Increment I on store",
+            );
+            ui.checkbox(&mut self.quirks.reset_vf_on_logic, "Reset VF on logic");
+            ui.checkbox(&mut self.quirks.wrap_draw, "Wrap sprite draw");
+            ui.checkbox(&mut self.quirks.shift_uses_vx, "Shift uses VX");
+            ui.separator();
+            ui.label("Tuning");
+            ui.add(
+                egui::Slider::new(&mut self.cycles_per_second, 100.0..=2000.0)
+                    .text("Flicker Adjustment"),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.max_cycles_per_frame, 50..=1000)
+                    .text("Frame Limit"),
+            );
             // This section anchors the Quit button to the bottom of the toolbox.
             ui.allocate_ui_with_layout(
                 ui.available_size(),
@@ -527,11 +657,7 @@ impl eframe::App for Chip8App {
                         self.single_step = true;
                     }
                     if ui.button("Restart").clicked() {
-                        // TODO: Take into account quirks
-                        if !self.rom_path.is_empty() {
-                            let rom_path = self.rom_path.clone();
-                            self.load_rom_from_path(Path::new(&rom_path));
-                        }
+                        self.restart_current_rom();
                     }
                     ui.end_row();
                 });
