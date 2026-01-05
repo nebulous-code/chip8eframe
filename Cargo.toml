@@ -37,5 +37,6 @@ log = "0.4.27"
 # You only need serde if you want app persistence:
 serde = { version = "1.0.219", features = ["derive"] }
 egui_extras = "0.32.1"
+rfd = "0.15.2"
 
 env_logger = "0.11.8"

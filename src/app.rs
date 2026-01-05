@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chip8sys::chip8::Chip8Sys;
 use chip8sys::chip8error::Chip8Error;
@@ -8,6 +8,8 @@ use egui::{Color32, Key};
 use egui_extras::{Column, TableBuilder};
 use rodio::mixer::Mixer;
 use rodio::source::{SineWave, Source};
+// This import provides a native file dialog for ROM selection.
+use rfd::FileDialog;
 
 use crate::about::About;
 
@@ -26,6 +28,8 @@ pub struct Chip8App {
     run: bool,
     single_step: bool,
     rom_path: String,
+    /// This field stores the last directory used for picking ROM files.
+    last_rom_dir: Option<PathBuf>,
 }
 
 impl Default for Chip8App {
@@ -64,7 +68,7 @@ impl Default for Chip8App {
             },
             compute_info: ConfigWindow {
                 name: String::from("Compute Info"),
-                show: true,
+                show: false,
             },
             about: ConfigWindow {
                 name: String::from("About Chip-8"),
@@ -73,11 +77,12 @@ impl Default for Chip8App {
             },
             control_flow: ConfigWindow {
                 name: String::from("Control Flow"),
-                show: true,
+                show: false,
             },
             run: true,
             single_step: false,
             rom_path: String::new(),
+            last_rom_dir: None,
         }
     }
 }
@@ -108,16 +113,21 @@ impl Chip8App {
         let rom_name = "walking_man.ch8";
         // let rom_name = "7-beep.ch8";
 
-        // This builds an absolute path to the ROM file based on the crate location.
-        let rom_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../roms")
-            .join(rom_name);
+        // This locates the shared ROM folder relative to this crate.
+        let roms_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../roms");
+        // This resolves the startup ROM path using the best available folder.
+        let rom_path = if roms_dir.is_dir() {
+            roms_dir.join(rom_name)
+        } else if let Ok(current_dir) = std::env::current_dir() {
+            current_dir.join(rom_name)
+        } else {
+            PathBuf::from(rom_name)
+        };
 
         // This stores the full ROM path so restarts reuse the same file.
-        result.rom_path = rom_path
-            .to_str()
-            .expect("rom path should be valid unicode")
-            .to_string();
+        result.rom_path = rom_path.to_string_lossy().to_string();
+        // This stores the ROM directory as the default pick location.
+        result.last_rom_dir = rom_path.parent().map(|parent| parent.to_path_buf());
 
         // This loads the ROM bytes into the emulator.
         result.chip8.load_rom(&result.rom_path);
@@ -132,6 +142,25 @@ impl Chip8App {
         println!("");
         // */
         result
+    }
+
+    /// This function chooses the default directory for the ROM picker dialog.
+    /// Arguments: none.
+    /// Returns: The preferred directory if available, otherwise None.
+    fn rom_picker_directory(&self) -> Option<PathBuf> {
+        // This prioritizes the most recently used ROM directory.
+        if let Some(last_dir) = &self.last_rom_dir {
+            return Some(last_dir.clone());
+        }
+
+        // This falls back to the shared ROMs directory if it exists.
+        let roms_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../roms");
+        if roms_dir.is_dir() {
+            return Some(roms_dir);
+        }
+
+        // This final fallback uses the current working directory.
+        std::env::current_dir().ok()
     }
 }
 
@@ -241,6 +270,31 @@ impl eframe::App for Chip8App {
                 self.screen_config.name.clone(),
             );
             ui.toggle_value(&mut self.control_flow.show, self.control_flow.name.clone());
+            ui.separator();
+            // This label shows the currently loaded ROM path.
+            if !self.rom_path.is_empty() {
+                ui.label(format!("ROM: {}", self.rom_path));
+            }
+            // This button opens a file dialog so a ROM can be selected at runtime.
+            if ui.button("Load ROM").clicked() {
+                // This dialog filters to common Chip-8 ROM extensions.
+                let mut dialog = FileDialog::new().add_filter("Chip-8 ROM", &["ch8", "8o"]);
+                // This sets the starting directory based on recent usage.
+                if let Some(default_dir) = self.rom_picker_directory() {
+                    dialog = dialog.set_directory(default_dir);
+                }
+                let rom_file = dialog.pick_file();
+                if let Some(path) = rom_file {
+                    // This resets the emulator before loading the new ROM.
+                    self.chip8 = Chip8Sys::new_chip_8();
+                    // This stores the selected path for future restarts.
+                    self.rom_path = path.to_string_lossy().to_string();
+                    // This stores the folder for the next file dialog.
+                    self.last_rom_dir = path.parent().map(|parent| parent.to_path_buf());
+                    // This loads the ROM bytes into memory.
+                    self.chip8.load_rom(&self.rom_path);
+                }
+            }
             if ui.button("Quit").clicked() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
