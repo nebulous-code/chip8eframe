@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, DISPLAY_WIDTH};
+use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, TimerMode, DISPLAY_WIDTH};
 use chip8sys::chip8error::Chip8Error;
 use egui::special_emojis;
 use egui::text::LayoutJob;
@@ -13,6 +14,13 @@ use rodio::source::{SineWave, Source};
 use rfd::FileDialog;
 
 use crate::about::About;
+
+/// This constant defines the target CPU speed in cycles per second.
+const CYCLES_PER_SECOND: f64 = 1100.0;
+/// This constant caps CPU catch-up to keep the UI responsive.
+const MAX_CYCLES_PER_FRAME: u32 = 200;
+/// This constant defines the timer tick rate in Hertz.
+const TIMER_HZ: f64 = 60.0;
 
 // if we add new fields, give them default values when deserializing old state
 pub struct Chip8App {
@@ -31,6 +39,12 @@ pub struct Chip8App {
     rom_path: String,
     /// This field stores the last directory used for picking ROM files.
     last_rom_dir: Option<PathBuf>,
+    /// This field stores the last time the emulator loop ran.
+    last_frame: Instant,
+    /// This field accumulates fractional CPU cycles between frames.
+    cpu_accumulator: f64,
+    /// This field accumulates timer ticks between frames.
+    timer_accumulator: f64,
 }
 
 impl Default for Chip8App {
@@ -84,6 +98,9 @@ impl Default for Chip8App {
             single_step: false,
             rom_path: String::new(),
             last_rom_dir: None,
+            last_frame: Instant::now(),
+            cpu_accumulator: 0.0,
+            timer_accumulator: 0.0,
         }
     }
 }
@@ -103,6 +120,8 @@ impl Chip8App {
             Ok(m) => result.sink = rodio::Sink::connect_new(m),
             Err(_) => (),
         }
+        // This configures the emulator to use externally driven timers.
+        result.chip8.set_timer_mode(TimerMode::External);
 
         // Load Chip-8 Roms
         // let rom_name = "1-chip8-logo.ch8";
@@ -205,7 +224,49 @@ impl eframe::App for Chip8App {
 
         // TODO: Not sure how I want to handle all these yet...
         // maybe log them in their own window?
-        if self.run | self.single_step {
+        // This measures the time since the last update.
+        let now = Instant::now();
+        let delta_seconds = now.duration_since(self.last_frame).as_secs_f64();
+        self.last_frame = now;
+
+        if self.run {
+            // This accumulates CPU work based on elapsed time.
+            self.cpu_accumulator += delta_seconds * CYCLES_PER_SECOND;
+            // This accumulates time toward the next timer tick.
+            self.timer_accumulator += delta_seconds * TIMER_HZ;
+
+            // This advances the delay and sound timers at 60Hz.
+            let timer_ticks = self.timer_accumulator.floor() as u32;
+            if timer_ticks > 0 {
+                self.chip8.tick_timers(timer_ticks);
+                self.timer_accumulator -= timer_ticks as f64;
+            }
+
+            // This advances the emulator state using the accumulated cycles.
+            let cycles_to_run = self.cpu_accumulator.floor() as u32;
+            if cycles_to_run > 0 {
+                let capped_cycles = cycles_to_run.min(MAX_CYCLES_PER_FRAME);
+                match self.chip8.tick(capped_cycles) {
+                    Ok(_) => (),
+                    Err(e) => match e {
+                        // if the N of 0xN___ is invalid it will return this and the N provided
+                        Chip8Error::InvalidFirstByte(_) => (),
+                        // If the X register should be <= 0xF
+                        Chip8Error::InvalidRegisterX(_) => (),
+                        // if the N in 0x8XYN is invalid it will return this and the N provided
+                        Chip8Error::Invalid0x8XYN(_) => (),
+                        // if the N in 0x8XYN is invalid it will return this and the N provided
+                        Chip8Error::Invalid0xENNN(_, _) => (),
+                        // if the N in 0x8XYN is invalid it will return this and the N provided
+                        Chip8Error::Invalid0xFNNN(_, _) => (),
+                        // If the register we're waiting for is somehow > 0xF
+                        Chip8Error::InvalidWaitRegister(_) => (),
+                        Chip8Error::IssueGeneratingRandomNum(_) => (),
+                    },
+                }
+                self.cpu_accumulator -= capped_cycles as f64;
+            }
+        } else if self.single_step {
             match self.chip8.tick(1) {
                 Ok(_) => (),
                 Err(e) => match e {
@@ -224,9 +285,7 @@ impl eframe::App for Chip8App {
                     Chip8Error::IssueGeneratingRandomNum(_) => (),
                 },
             }
-            if self.single_step {
-                self.single_step = false;
-            }
+            self.single_step = false;
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
