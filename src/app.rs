@@ -298,7 +298,7 @@ impl eframe::App for Chip8App {
             // This button opens a file dialog so a ROM can be selected at runtime.
             if ui.button("Load ROM").clicked() {
                 // This dialog filters to common Chip-8 ROM extensions.
-                let mut dialog = FileDialog::new().add_filter("Chip-8 ROM", &["ch8", "8o"]);
+                let mut dialog = FileDialog::new().add_filter("Chip-8 ROM", &["ch8"]);
                 // This sets the starting directory based on recent usage.
                 if let Some(default_dir) = self.rom_picker_directory() {
                     dialog = dialog.set_directory(default_dir);
