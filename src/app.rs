@@ -1,6 +1,7 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use chip8sys::chip8::Chip8Sys;
+use chip8sys::chip8::{Chip8KeyMask, Chip8Sys, DISPLAY_WIDTH};
 use chip8sys::chip8error::Chip8Error;
 use egui::special_emojis;
 use egui::text::LayoutJob;
@@ -124,13 +125,8 @@ impl Chip8App {
             PathBuf::from(rom_name)
         };
 
-        // This stores the full ROM path so restarts reuse the same file.
-        result.rom_path = rom_path.to_string_lossy().to_string();
-        // This stores the ROM directory as the default pick location.
-        result.last_rom_dir = rom_path.parent().map(|parent| parent.to_path_buf());
-
         // This loads the ROM bytes into the emulator.
-        result.chip8.load_rom(&result.rom_path);
+        result.load_rom_from_path(&rom_path);
         // result.chip8.load_chip8_logo();
         // result.chip8.load_sound_test();
         //
@@ -162,6 +158,23 @@ impl Chip8App {
         // This final fallback uses the current working directory.
         std::env::current_dir().ok()
     }
+
+    /// This function loads a ROM file from disk and resets the emulator state.
+    /// Arguments:
+    /// - rom_path: The path to the ROM file.
+    /// Returns: none.
+    fn load_rom_from_path(&mut self, rom_path: &Path) {
+        // This reads the ROM bytes from disk for the emulator to load.
+        let rom_bytes = fs::read(rom_path).expect("rom file should be readable");
+        // This resets the emulator while preserving its quirk settings.
+        self.chip8.reset();
+        // This stores the selected path for future restarts.
+        self.rom_path = rom_path.to_string_lossy().to_string();
+        // This stores the folder for the next file dialog.
+        self.last_rom_dir = rom_path.parent().map(|parent| parent.to_path_buf());
+        // This loads the ROM bytes into memory.
+        self.chip8.load_rom_bytes(&rom_bytes);
+    }
 }
 
 impl eframe::App for Chip8App {
@@ -172,13 +185,19 @@ impl eframe::App for Chip8App {
         // I think I'm missing an edge case quirk thing where chip-8 only acts if a key is released
         // But that might be beyond my scope of interest for this project
         ctx.input(|i| {
+            // This mask stores the pressed keys for the boundary API.
+            let mut key_mask: Chip8KeyMask = 0;
             for (n, k) in self.key_map.iter().enumerate() {
-                self.chip8.keys[n] = i.key_pressed(*k);
+                if i.key_pressed(*k) {
+                    key_mask |= 1u16 << n;
+                }
             }
+            // This updates the emulator keypad state.
+            self.chip8.set_keys_mask(key_mask);
         });
 
         // Handle Sound
-        if self.chip8.is_playing_sound {
+        if self.chip8.is_sound_playing() {
             self.sink.append(SineWave::new(440.0).repeat_infinite());
         } else {
             self.sink.stop();
@@ -187,7 +206,7 @@ impl eframe::App for Chip8App {
         // TODO: Not sure how I want to handle all these yet...
         // maybe log them in their own window?
         if self.run | self.single_step {
-            match self.chip8.run() {
+            match self.chip8.tick(1) {
                 Ok(_) => (),
                 Err(e) => match e {
                     // if the N of 0xN___ is invalid it will return this and the N provided
@@ -219,9 +238,10 @@ impl eframe::App for Chip8App {
             let mut col = 0.0;
             let x_off = 50.0;
             let y_off = 45.0;
-            let col_count = 8;
+            // This value represents the packed bytes per row of pixels.
+            let col_count = DISPLAY_WIDTH / 8;
 
-            for (n, px) in self.chip8.frame_buffer.iter().enumerate() {
+            for (n, px) in self.chip8.framebuffer_packed().iter().enumerate() {
                 if n % col_count == 0 {
                     row += width;
                     col = 0.0;
@@ -285,14 +305,8 @@ impl eframe::App for Chip8App {
                 }
                 let rom_file = dialog.pick_file();
                 if let Some(path) = rom_file {
-                    // This resets the emulator before loading the new ROM.
-                    self.chip8 = Chip8Sys::new_chip_8();
-                    // This stores the selected path for future restarts.
-                    self.rom_path = path.to_string_lossy().to_string();
-                    // This stores the folder for the next file dialog.
-                    self.last_rom_dir = path.parent().map(|parent| parent.to_path_buf());
-                    // This loads the ROM bytes into memory.
-                    self.chip8.load_rom(&self.rom_path);
+                    // This loads the selected ROM and updates the emulator state.
+                    self.load_rom_from_path(&path);
                 }
             }
             ui.separator();
@@ -309,11 +323,10 @@ impl eframe::App for Chip8App {
                 // This button reloads the current ROM from disk.
                 if ui.button("Restart").clicked() {
                     // TODO: Take into account quirks
-                    self.chip8 = Chip8Sys::new_chip_8();
-                    self.chip8.load_rom(&self.rom_path);
-                    // self.chip8.memory[0x1FF] = 1;
-                    // self.chip8.load_chip8_logo();
-                    // self.chip8.load_sound_test();
+                    if !self.rom_path.is_empty() {
+                        let rom_path = self.rom_path.clone();
+                        self.load_rom_from_path(Path::new(&rom_path));
+                    }
                 }
             });
             // This section anchors the Quit button to the bottom of the toolbox.
@@ -441,8 +454,9 @@ impl eframe::App for Chip8App {
                 ui.label(format!("{} Source Code", special_emojis::GITHUB));
                 ui.hyperlink("https://github.com/licalsinj/chip-8");
             });
+        let mut control_flow_open = self.control_flow.show;
         egui::Window::new(self.control_flow.name.clone())
-            .open(&mut self.control_flow.show)
+            .open(&mut control_flow_open)
             .show(ctx, |ui| {
                 ui.heading("Chip-8 Control Flow");
                 ui.label("Pause or run the emulator. When paused you can use Single Step to walk through one command at a time.");
@@ -455,11 +469,10 @@ impl eframe::App for Chip8App {
                     }
                     if ui.button("Restart").clicked() {
                         // TODO: Take into account quirks
-                        self.chip8 = Chip8Sys::new_chip_8();
-                        self.chip8.load_rom(&self.rom_path);
-                        // self.chip8.memory[0x1FF] = 1;
-                        // self.chip8.load_chip8_logo();
-                        // self.chip8.load_sound_test();
+                        if !self.rom_path.is_empty() {
+                            let rom_path = self.rom_path.clone();
+                            self.load_rom_from_path(Path::new(&rom_path));
+                        }
                     }
                     ui.end_row();
                 });
@@ -481,6 +494,7 @@ impl eframe::App for Chip8App {
                     ui.end_row();
                 });
             });
+        self.control_flow.show = control_flow_open;
     }
 }
 
