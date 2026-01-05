@@ -295,9 +295,38 @@ impl eframe::App for Chip8App {
                     self.chip8.load_rom(&self.rom_path);
                 }
             }
-            if ui.button("Quit").clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            ui.separator();
+            // This label introduces the control flow buttons in the toolbox.
+            ui.label("Control Flow");
+            // This row toggles run and pause without opening the detail window.
+            ui.horizontal_wrapped(|ui| {
+                let state = if self.run { "Pause" } else { "Run" };
+                ui.toggle_value(&mut self.run, state);
+                // This button advances the emulator by one instruction while paused.
+                if ui.add_enabled(!self.run, egui::Button::new("Single Step")).clicked() {
+                    self.single_step = true;
+                }
+                // This button reloads the current ROM from disk.
+                if ui.button("Restart").clicked() {
+                    // TODO: Take into account quirks
+                    self.chip8 = Chip8Sys::new_chip_8();
+                    self.chip8.load_rom(&self.rom_path);
+                    // self.chip8.memory[0x1FF] = 1;
+                    // self.chip8.load_chip8_logo();
+                    // self.chip8.load_sound_test();
+                }
+            });
+            // This section anchors the Quit button to the bottom of the toolbox.
+            ui.allocate_ui_with_layout(
+                ui.available_size(),
+                egui::Layout::bottom_up(egui::Align::LEFT),
+                |ui| {
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    ui.separator();
+                },
+            );
         });
 
         egui::Window::new(self.compute_info.name.clone())
