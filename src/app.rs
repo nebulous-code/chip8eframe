@@ -241,11 +241,8 @@ impl eframe::App for Chip8App {
                 self.screen_config.name.clone(),
             );
             ui.toggle_value(&mut self.control_flow.show, self.control_flow.name.clone());
-            let is_web = cfg!(target_arch = "wasm32");
-            if !is_web {
-                if ui.button("Quit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+            if ui.button("Quit").clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
 
@@ -376,7 +373,6 @@ impl eframe::App for Chip8App {
                     if ui.button("Restart").clicked() {
                         // TODO: Take into account quirks
                         self.chip8 = Chip8Sys::new_chip_8();
-                        // TODO: do this better right now I want to know if wasm works
                         self.chip8.load_rom(&self.rom_path);
                         // self.chip8.memory[0x1FF] = 1;
                         // self.chip8.load_chip8_logo();
