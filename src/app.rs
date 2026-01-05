@@ -188,7 +188,7 @@ impl eframe::App for Chip8App {
             // This mask stores the pressed keys for the boundary API.
             let mut key_mask: Chip8KeyMask = 0;
             for (n, k) in self.key_map.iter().enumerate() {
-                if i.key_pressed(*k) {
+                if i.key_down(*k) {
                     key_mask |= 1u16 << n;
                 }
             }
